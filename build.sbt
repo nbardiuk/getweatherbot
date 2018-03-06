@@ -1,4 +1,4 @@
-name := "http4s-kafka"
+name := "getweatherbot"
 
 version := "0.1"
 
@@ -17,5 +17,8 @@ libraryDependencies ++= Seq(
   "org.http4s" %% "http4s-blaze-client" % http4sVersion,
   "org.http4s" %% "http4s-circe" % http4sVersion,
 
-  "io.circe" %% "circe-optics" % circeVersion
+  "io.circe" %% "circe-optics" % circeVersion,
+
+  "ch.qos.logback" % "logback-classic" % "1.2.3",
+  "com.typesafe.scala-logging" %% "scala-logging" % "3.8.0"
 )

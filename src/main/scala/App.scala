@@ -1,8 +1,7 @@
 import cats.effect.IO
+import com.typesafe.scalalogging.LazyLogging
 import fs2.Stream.iterateEval
 import fs2.StreamApp.ExitCode
-import fs2.io._
-import fs2.text.utf8Encode
 import fs2.{Stream, StreamApp}
 import io.circe.Json
 import io.circe.optics.JsonPath._
@@ -15,49 +14,39 @@ import org.http4s.{Request, Uri}
 
 import scala.concurrent.ExecutionContext.Implicits.global
 
-object App extends StreamApp[IO] {
+object App extends StreamApp[IO] with LazyLogging {
 
   case class InlineQuery(id: String, query: String)
 
   val token = ""
-  val botBase = s"https://api.telegram.org/bot$token"
-  val botUri: Uri = Uri.unsafeFromString(botBase)
+  val botUri: Uri = Uri.unsafeFromString(s"https://api.telegram.org/bot$token")
 
   private val httpClient: IO[Client[IO]] = Http1Client[IO]()
 
-  def answer(q: InlineQuery): IO[Unit] = {
-    println(q)
+  def answerInlineQuery(query: InlineQuery): IO[Json] = {
+    logger.info("{}", query)
 
-    def answerQuery(): IO[Request[IO]] = {
-      val response = Json.obj(
-        "inline_query_id" -> Json.fromString(q.id),
-        "cache_time" -> Json.fromInt(3),
-        "results" -> Json.arr(
-          Json.obj(
-            "type" -> Json.fromString("article"),
-            "id" -> Json.fromString(q.id),
-            "title" -> Json.fromString(s"Weather in ${q.query}"),
-            "input_message_content" -> Json.obj(
-              "message_text" -> Json.fromString(s"""
-                  |*Weather in ${q.query}*
-                  |
-                  |Condition: 🌧
-                  |Temperature: 14 ºC
-                  |
+    val response = Json.obj(
+      "inline_query_id" -> Json.fromString(query.id),
+      "cache_time" -> Json.fromInt(3),
+      "results" -> Json.arr(
+        Json.obj(
+          "type" -> Json.fromString("article"),
+          "id" -> Json.fromString(query.id),
+          "title" -> Json.fromString(s"Weather in ${query.query}"),
+          "input_message_content" -> Json.obj(
+            "message_text" -> Json.fromString(s"""
+                 |*Weather in ${query.query}*
+                 |
+                 |Condition: 🌧
+                 |Temperature: 14 ºC
+                 |
                 """.stripMargin),
-              "parse_mode" -> Json.fromString("Markdown")
-            )
-          ))
-      )
-
-      POST(botUri / "answerInlineQuery", response)
-    }
-
-    for {
-      client <- httpClient
-      response <- client.expect(answerQuery())(jsonDecoder)
-      _ <- client.shutdown
-    } yield response
+            "parse_mode" -> Json.fromString("Markdown")
+          )
+        ))
+    )
+    jsonIO(POST(botUri / "answerInlineQuery", response))
   }
 
   def stream(args: List[String],
@@ -67,15 +56,10 @@ object App extends StreamApp[IO] {
       updates().flatMap(json => Stream.emits(parseInlineQueries(json)))
 
     inlineQueries
-      .observe(_.evalMap(answer).handleErrorWith { e =>
-        println(e)
-        Stream.empty
-      })
-      // Why stream does not work without through????????
-      .map(_ + "\n")
-      .through(utf8Encode)
-      .to(stdout)
-      //run
+      .observe(
+        _.evalMap(answerInlineQuery)
+          .handleErrorWith(justLog("AnswerInlineQuery"))
+          .as())
       .drain >> Stream.emit(ExitCode.Success)
   }
 
@@ -94,22 +78,17 @@ object App extends StreamApp[IO] {
   private def updates(): Stream[IO, Json] = {
 
     def getUpdates(lastSeen: Option[Int]): IO[Request[IO]] = {
-      POST(botUri / "getUpdates",
-           Json.obj(
-             "offset" -> Json.fromInt(lastSeen.getOrElse(0) + 1),
-             "timeout" -> Json.fromInt(1)
-           ))
+      val params = Json.obj(
+        "offset" -> Json.fromInt(lastSeen.getOrElse(0) + 1),
+        "timeout" -> Json.fromInt(5)
+      )
+      POST(botUri / "getUpdates", params)
     }
 
-    def lastId(json: Json): Option[Int] = {
-      root.result.each.update_id.int.lastOption(json)
-    }
+    def lastId: Json => Option[Int] = root.result.each.update_id.int.lastOption
 
     iterateEval[IO, Json](Json.obj())(js => jsonIO(getUpdates(lastId(js))))
-      .handleErrorWith { e =>
-        println(s"error: ${e}")
-        updates()
-      }
+      .handleErrorWith(justLog("GetUpdates"))
   }
 
   private def jsonIO(request: IO[Request[IO]]): IO[Json] = {
@@ -118,5 +97,10 @@ object App extends StreamApp[IO] {
       response <- client.expect(request)(jsonDecoder)
       _ <- client.shutdown
     } yield response
+  }
+
+  private def justLog(message: String)(error: Throwable) = {
+    logger.warn(message, error)
+    Stream.empty
   }
 }
