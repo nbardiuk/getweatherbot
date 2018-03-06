@@ -23,7 +23,7 @@ object App extends StreamApp[IO] with LazyLogging {
 
   private val httpClient: IO[Client[IO]] = Http1Client[IO]()
 
-  def answerInlineQuery(query: InlineQuery): IO[Json] = {
+  def answerInlineQuery(query: InlineQuery, client: Client[IO]): IO[Json] = {
     logger.info("{}", query)
 
     val response = Json.obj(
@@ -46,20 +46,21 @@ object App extends StreamApp[IO] with LazyLogging {
           )
         ))
     )
-    jsonIO(POST(botUri / "answerInlineQuery", response))
+    jsonIO(client, POST(botUri / "answerInlineQuery", response))
   }
 
   def stream(args: List[String],
              requestShutdown: IO[Unit]): Stream[IO, ExitCode] = {
 
-    val inlineQueries: Stream[IO, InlineQuery] =
-      updates().flatMap(json => Stream.emits(parseInlineQueries(json)))
-
-    inlineQueries
-      .observe(
-        _.evalMap(answerInlineQuery)
-          .handleErrorWith(justLog("AnswerInlineQuery"))
-          .as())
+    Http1Client
+      .stream[IO]()
+      .flatMap { client =>
+        updates(client)
+          .flatMap(json => Stream.emits(parseInlineQueries(json)))
+          .observeAsync(10)(_.evalMap(query => answerInlineQuery(query, client))
+            .handleErrorWith(justLog("AnswerInlineQuery"))
+            .as())
+      }
       .drain >> Stream.emit(ExitCode.Success)
   }
 
@@ -75,7 +76,7 @@ object App extends StreamApp[IO] with LazyLogging {
     } yield InlineQuery(id, query)
   }
 
-  private def updates(): Stream[IO, Json] = {
+  private def updates(client: Client[IO]): Stream[IO, Json] = {
 
     def getUpdates(lastSeen: Option[Int]): IO[Request[IO]] = {
       val params = Json.obj(
@@ -87,16 +88,13 @@ object App extends StreamApp[IO] with LazyLogging {
 
     def lastId: Json => Option[Int] = root.result.each.update_id.int.lastOption
 
-    iterateEval[IO, Json](Json.obj())(js => jsonIO(getUpdates(lastId(js))))
+    iterateEval[IO, Json](Json.obj())(js =>
+      jsonIO(client, getUpdates(lastId(js))))
       .handleErrorWith(justLog("GetUpdates"))
   }
 
-  private def jsonIO(request: IO[Request[IO]]): IO[Json] = {
-    for {
-      client <- httpClient
-      response <- client.expect(request)(jsonDecoder)
-      _ <- client.shutdown
-    } yield response
+  private def jsonIO(client: Client[IO], request: IO[Request[IO]]): IO[Json] = {
+    client.expect(request)(jsonDecoder)
   }
 
   private def justLog(message: String)(error: Throwable) = {
