@@ -18,7 +18,10 @@ libraryDependencies ++= Seq(
   "org.http4s" %% "http4s-circe" % http4sVersion,
 
   "io.circe" %% "circe-optics" % circeVersion,
+  "io.circe" %% "circe-generic" % circeVersion,
 
   "ch.qos.logback" % "logback-classic" % "1.2.3",
-  "com.typesafe.scala-logging" %% "scala-logging" % "3.8.0"
+  "com.typesafe.scala-logging" %% "scala-logging" % "3.8.0",
+
+  "info.debatty" % "java-string-similarity" % "1.0.1"
 )
